@@ -530,6 +530,20 @@ def delete_track(artist_id, album_id, track_id):
             album['tracks'] = [t for t in album['tracks'] if t['id'] != track_id]
             save_album(album)
     return redirect(url_for('view_album', artist_id=artist_id, album_id=album_id))
+# --------- ここだけ追加 ---------
+class PrefixMiddleware(object):
+    def __init__(self, app, prefix):
+        self.app = app
+        self.prefix = prefix
 
+    def __call__(self, environ, start_response):
+        environ["SCRIPT_NAME"] = self.prefix
+        path = environ.get("PATH_INFO", "")
+        if path.startswith(self.prefix):
+            environ["PATH_INFO"] = path[len(self.prefix):]
+        return self.app(environ, start_response)
+
+app.wsgi_app = PrefixMiddleware(app.wsgi_app, "/music")
+# --------------------------------
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
