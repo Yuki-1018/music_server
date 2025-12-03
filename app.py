@@ -6,16 +6,14 @@ import time
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory, jsonify, session
 from werkzeug.utils import secure_filename
-from werkzeug.middleware.proxy_fix import ProxyFix  # 【追加】プロキシ対応
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
 CORS(app)
 
-# --- 【重要】HTTPS/HTTP自動切り替え設定 ---
-# Nginx, Cloudflare, Ngrokなどの裏で動かす場合に、
-# 正しく https:// のURLを生成するようにヘッダーを読み取ります。
+# プロキシ設定（念のため残しておきますが、今回はコード側でHTTPSを強制します）
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # --- 設定 ---
@@ -251,16 +249,16 @@ def stream_music(filename):
 def serve_image(filename):
     return send_from_directory(app.config['IMAGES_FOLDER'], filename)
 
-# --- API (HTTPS自動切り替え対応) ---
+# --- API (HTTPS強制対応) ---
+# _scheme='https' をつけることで、強制的に https:// のURLを生成します
 
 @app.route('/api/artists')
 def api_get_artists():
     data = load_index()
     for artist in data:
         if artist.get('image'):
-            # _external=True はリクエストのプロトコル(http/https)に合わせてURLを生成します
-            artist['image_url'] = url_for('serve_image', filename=artist['image'], _external=True)
-        artist['api_url'] = url_for('api_get_artist_detail', artist_id=artist['id'], _external=True)
+            artist['image_url'] = url_for('serve_image', filename=artist['image'], _external=True, _scheme='https')
+        artist['api_url'] = url_for('api_get_artist_detail', artist_id=artist['id'], _external=True, _scheme='https')
     return jsonify(data)
 
 @app.route('/api/artist/<artist_id>')
@@ -269,12 +267,12 @@ def api_get_artist_detail(artist_id):
     if not artist: return jsonify({"error": "Artist not found"}), 404
     
     if artist.get('image'):
-        artist['image_url'] = url_for('serve_image', filename=artist['image'], _external=True)
+        artist['image_url'] = url_for('serve_image', filename=artist['image'], _external=True, _scheme='https')
 
     for album in artist['albums']:
         if album.get('cover_image'):
-            album['cover_url'] = url_for('serve_image', filename=album['cover_image'], _external=True)
-        album['api_url'] = url_for('api_get_album_detail', album_id=album['id'], _external=True)
+            album['cover_url'] = url_for('serve_image', filename=album['cover_image'], _external=True, _scheme='https')
+        album['api_url'] = url_for('api_get_album_detail', album_id=album['id'], _external=True, _scheme='https')
 
     return jsonify(artist)
 
@@ -284,12 +282,11 @@ def api_get_album_detail(album_id):
     if not album: return jsonify({"error": "Album not found"}), 404
 
     if album.get('cover_image'):
-        album['cover_url'] = url_for('serve_image', filename=album['cover_image'], _external=True)
+        album['cover_url'] = url_for('serve_image', filename=album['cover_image'], _external=True, _scheme='https')
 
     for track in album['tracks']:
         if not track.get('processing') and track.get('filename'):
-            # _external=True で自動切り替え
-            track['stream_url'] = url_for('stream_music', filename=track['filename'], _external=True)
+            track['stream_url'] = url_for('stream_music', filename=track['filename'], _external=True, _scheme='https')
         track['cover_url'] = album.get('cover_url')
 
     return jsonify(album)
@@ -507,7 +504,6 @@ def delete_track(artist_id, album_id, track_id):
             album['tracks'] = [t for t in album['tracks'] if t['id'] != track_id]
             save_album(album)
     return redirect(url_for('view_album', artist_id=artist_id, album_id=album_id))
-
 # --------- ここだけ追加 ---------
 class PrefixMiddleware(object):
     def __init__(self, app, prefix):
