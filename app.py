@@ -6,11 +6,17 @@ import time
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory, jsonify, session
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix  # 【追加】プロキシ対応
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
 CORS(app)
+
+# --- 【重要】HTTPS/HTTP自動切り替え設定 ---
+# Nginx, Cloudflare, Ngrokなどの裏で動かす場合に、
+# 正しく https:// のURLを生成するようにヘッダーを読み取ります。
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # --- 設定 ---
 app.config['MUSIC_FOLDER'] = 'music'
@@ -33,10 +39,9 @@ if not os.path.exists(app.config['INDEX_FILE']):
     with open(app.config['INDEX_FILE'], 'w', encoding='utf-8') as f:
         json.dump([], f)
 
-# --- データ操作ヘルパー (分割保存対応) ---
+# --- データ操作ヘルパー ---
 
 def load_index():
-    """全アーティスト一覧を取得"""
     try:
         with open(app.config['INDEX_FILE'], 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -48,7 +53,6 @@ def save_index(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 def load_artist(artist_id):
-    """アーティスト詳細（アルバムリスト含む、トラックは含まない）"""
     filepath = os.path.join(app.config['ARTISTS_FOLDER'], f"{artist_id}.json")
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -56,13 +60,10 @@ def load_artist(artist_id):
     return None
 
 def save_artist(artist_data):
-    """アーティスト情報を保存し、index.jsonも更新"""
-    # 1. アーティストファイルの保存
     filepath = os.path.join(app.config['ARTISTS_FOLDER'], f"{artist_data['id']}.json")
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(artist_data, f, indent=4, ensure_ascii=False)
 
-    # 2. index.json の更新
     index_data = load_index()
     summary = {
         "id": artist_data['id'],
@@ -85,7 +86,6 @@ def save_artist(artist_data):
     save_index(index_data)
 
 def load_album(album_id):
-    """アルバム詳細（トラックデータを含む）"""
     filepath = os.path.join(app.config['ALBUMS_FOLDER'], f"{album_id}.json")
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -93,39 +93,31 @@ def load_album(album_id):
     return None
 
 def save_album(album_data):
-    """アルバム情報を保存"""
     filepath = os.path.join(app.config['ALBUMS_FOLDER'], f"{album_data['id']}.json")
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(album_data, f, indent=4, ensure_ascii=False)
 
 def delete_artist_data(artist_id):
-    """アーティストと、その全アルバムを削除"""
     artist = load_artist(artist_id)
     if artist:
-        # 関連アルバムの削除
         for alb_ref in artist['albums']:
             alb_path = os.path.join(app.config['ALBUMS_FOLDER'], f"{alb_ref['id']}.json")
             if os.path.exists(alb_path):
                 os.remove(alb_path)
         
-        # アーティストファイルの削除
         art_path = os.path.join(app.config['ARTISTS_FOLDER'], f"{artist_id}.json")
         if os.path.exists(art_path):
             os.remove(art_path)
 
-    # indexからの削除
     index_data = load_index()
     index_data = [a for a in index_data if a['id'] != artist_id]
     save_index(index_data)
 
 def delete_album_data(artist_id, album_id):
-    """アルバム単体の削除（アーティスト側のリストからも削除）"""
-    # アルバムファイルの削除
     alb_path = os.path.join(app.config['ALBUMS_FOLDER'], f"{album_id}.json")
     if os.path.exists(alb_path):
         os.remove(alb_path)
 
-    # アーティスト情報の更新
     artist = load_artist(artist_id)
     if artist:
         artist['albums'] = [a for a in artist['albums'] if a['id'] != album_id]
@@ -154,11 +146,6 @@ def login_required(f):
 # --- バックグラウンド処理 ---
 
 def background_download_process(album_id, url, temp_track_id, start_track_num):
-    """
-    バックグラウンドダウンロード
-    ※アルバムIDだけで操作可能になったため、artist_idは不要になりましたが、
-    念のため整合性チェック等は必要であれば追加してください。
-    """
     try:
         ydl_opts_info = {'quiet': True, 'extract_flat': 'in_playlist', 'ignoreerrors': True}
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
@@ -167,11 +154,9 @@ def background_download_process(album_id, url, temp_track_id, start_track_num):
         if 'entries' in info: entries = list(info['entries'])
         else: entries = [info]
 
-        # アルバムデータの読み込み
         album = load_album(album_id)
         if not album: return
 
-        # 仮トラック削除
         album['tracks'] = [t for t in album['tracks'] if t['id'] != temp_track_id]
 
         download_queue = []
@@ -198,7 +183,6 @@ def background_download_process(album_id, url, temp_track_id, start_track_num):
         album['tracks'].sort(key=lambda x: x['track_number'])
         save_album(album)
 
-        # ダウンロード実行
         ydl_opts_dl = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -211,7 +195,7 @@ def background_download_process(album_id, url, temp_track_id, start_track_num):
         }
 
         for item in download_queue:
-            album = load_album(album_id) # 最新状態をリロード
+            album = load_album(album_id)
             if not album: break
             
             target_track = next((t for t in album['tracks'] if t['id'] == item['id']), None)
@@ -267,21 +251,20 @@ def stream_music(filename):
 def serve_image(filename):
     return send_from_directory(app.config['IMAGES_FOLDER'], filename)
 
-# --- API (構造変更) ---
+# --- API (HTTPS自動切り替え対応) ---
 
 @app.route('/api/artists')
 def api_get_artists():
-    """全アーティスト一覧"""
     data = load_index()
     for artist in data:
         if artist.get('image'):
+            # _external=True はリクエストのプロトコル(http/https)に合わせてURLを生成します
             artist['image_url'] = url_for('serve_image', filename=artist['image'], _external=True)
         artist['api_url'] = url_for('api_get_artist_detail', artist_id=artist['id'], _external=True)
     return jsonify(data)
 
 @app.route('/api/artist/<artist_id>')
 def api_get_artist_detail(artist_id):
-    """アーティスト詳細（アルバム一覧のみ。曲は含まない）"""
     artist = load_artist(artist_id)
     if not artist: return jsonify({"error": "Artist not found"}), 404
     
@@ -291,14 +274,12 @@ def api_get_artist_detail(artist_id):
     for album in artist['albums']:
         if album.get('cover_image'):
             album['cover_url'] = url_for('serve_image', filename=album['cover_image'], _external=True)
-        # APIのリンクを追加
         album['api_url'] = url_for('api_get_album_detail', album_id=album['id'], _external=True)
 
     return jsonify(artist)
 
 @app.route('/api/album/<album_id>')
 def api_get_album_detail(album_id):
-    """【新規】アルバム詳細（曲一覧を含む）"""
     album = load_album(album_id)
     if not album: return jsonify({"error": "Album not found"}), 404
 
@@ -307,6 +288,7 @@ def api_get_album_detail(album_id):
 
     for track in album['tracks']:
         if not track.get('processing') and track.get('filename'):
+            # _external=True で自動切り替え
             track['stream_url'] = url_for('stream_music', filename=track['filename'], _external=True)
         track['cover_url'] = album.get('cover_url')
 
@@ -329,7 +311,7 @@ def add_artist():
         "genre": request.form.get('genre', ''),
         "description": request.form.get('description', ''),
         "image": img_filename,
-        "albums": [] # メタデータのみ
+        "albums": []
     }
     save_artist(new_artist)
     return redirect(url_for('index'))
@@ -368,7 +350,6 @@ def add_album(artist_id):
         album_id = str(uuid.uuid4())
         img_filename = save_image_file(request.files.get('image'))
         
-        # 1. アーティスト詳細には「参照情報」のみ保存
         album_ref = {
             "id": album_id,
             "title": request.form['title'],
@@ -379,10 +360,9 @@ def add_album(artist_id):
         artist['albums'].append(album_ref)
         save_artist(artist)
 
-        # 2. アルバム詳細ファイルを作成（ここにトラックが入る）
         new_album_detail = {
             "id": album_id,
-            "artist_id": artist_id, # 親への参照
+            "artist_id": artist_id,
             "artist_name": artist['name'],
             "title": request.form['title'],
             "year": request.form.get('year', ''),
@@ -401,13 +381,11 @@ def edit_album(artist_id, album_id):
     album_detail = load_album(album_id)
 
     if artist and album_detail:
-        # 両方を更新する必要がある
         title = request.form['title']
         year = request.form['year']
         atype = request.form['type']
         new_img = save_image_file(request.files.get('image'))
 
-        # 1. アーティスト側の参照更新
         for ref in artist['albums']:
             if ref['id'] == album_id:
                 ref['title'] = title
@@ -417,7 +395,6 @@ def edit_album(artist_id, album_id):
                 break
         save_artist(artist)
 
-        # 2. アルバム詳細の更新
         album_detail['title'] = title
         album_detail['year'] = year
         album_detail['type'] = atype
@@ -530,20 +507,6 @@ def delete_track(artist_id, album_id, track_id):
             album['tracks'] = [t for t in album['tracks'] if t['id'] != track_id]
             save_album(album)
     return redirect(url_for('view_album', artist_id=artist_id, album_id=album_id))
-# --------- ここだけ追加 ---------
-class PrefixMiddleware(object):
-    def __init__(self, app, prefix):
-        self.app = app
-        self.prefix = prefix
 
-    def __call__(self, environ, start_response):
-        environ["SCRIPT_NAME"] = self.prefix
-        path = environ.get("PATH_INFO", "")
-        if path.startswith(self.prefix):
-            environ["PATH_INFO"] = path[len(self.prefix):]
-        return self.app(environ, start_response)
-
-app.wsgi_app = PrefixMiddleware(app.wsgi_app, "/music")
-# --------------------------------
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
