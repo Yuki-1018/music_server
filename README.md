@@ -94,9 +94,7 @@ gunicorn -w 4 -b 127.0.0.1:5000 app:app
 - **パスワード**: `123456`
 
 ※ `app.py` 内の `ADMIN_USERNAME` と `ADMIN_PASSWORD` を書き換えて使用してください。
-```
 
----
 
 # 2. app.py への追加コード
 
@@ -137,8 +135,6 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # ... (以下、app.config 設定などが続く) ...
 ```
-
----
 
 # 3. Nginx 設定ファイル
 
