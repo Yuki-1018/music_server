@@ -2,10 +2,9 @@ import os
 import json
 import uuid
 import threading
-import time
 import subprocess
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, send_from_directory, jsonify, Response, session
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_cors import CORS
@@ -14,13 +13,10 @@ import yt_dlp
 app = Flask(__name__)
 CORS(app)
 
-# プロキシ対応 (HTTPS強制用)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
-# --- 設定 ---
 app.config['BASE_DIR'] = os.path.dirname(os.path.abspath(__file__))
 app.config['MUSIC_FOLDER'] = os.path.join(app.config['BASE_DIR'], 'music')
-app.config['MUSIC_LOW_FOLDER'] = os.path.join(app.config['BASE_DIR'], 'music_low')
 app.config['IMAGES_FOLDER'] = os.path.join(app.config['BASE_DIR'], 'images')
 app.config['DATA_FOLDER'] = os.path.join(app.config['BASE_DIR'], 'data')
 app.config['ARTISTS_FOLDER'] = os.path.join(app.config['DATA_FOLDER'], 'artists')
@@ -28,18 +24,16 @@ app.config['ALBUMS_FOLDER'] = os.path.join(app.config['DATA_FOLDER'], 'albums')
 app.config['INDEX_FILE'] = os.path.join(app.config['DATA_FOLDER'], 'index.json')
 app.config['UPLOAD_TEMP'] = os.path.join(app.config['BASE_DIR'], 'temp_upload')
 
-# Basic認証設定
+app.secret_key = 'super_secret_key_change_me'
+
 ADMIN_USERNAME = 'admin'
 ADMIN_PASSWORD = '123456'
 
 ALLOWED_EXTENSIONS_IMG = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 ALLOWED_EXTENSIONS_AUDIO = {'mp3', 'wav', 'm4a', 'aac', 'flac', 'mp4', 'mov', 'webm', 'mkv'}
 
-# --- 初期化 ---
-for folder in [app.config['MUSIC_FOLDER'], app.config['MUSIC_LOW_FOLDER'], 
-               app.config['IMAGES_FOLDER'], app.config['DATA_FOLDER'], 
-               app.config['ARTISTS_FOLDER'], app.config['ALBUMS_FOLDER'],
-               app.config['UPLOAD_TEMP']]:
+for folder in [app.config['MUSIC_FOLDER'], app.config['IMAGES_FOLDER'], app.config['DATA_FOLDER'], 
+               app.config['ARTISTS_FOLDER'], app.config['ALBUMS_FOLDER'], app.config['UPLOAD_TEMP']]:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
@@ -47,17 +41,12 @@ if not os.path.exists(app.config['INDEX_FILE']):
     with open(app.config['INDEX_FILE'], 'w', encoding='utf-8') as f:
         json.dump([], f)
 
-# --- Basic認証ロジック ---
-
 def check_auth(username, password):
-    """IDとパスワードを検証"""
     return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
 
 def authenticate():
-    """認証エラー時のレスポンス（ブラウザにダイアログを出させる）"""
     return Response(
-        '管理画面にアクセスするには認証が必要です。\n'
-        'ユーザー名: admin, パスワード: 123456', 401,
+        '認証が必要です', 401,
         {'WWW-Authenticate': 'Basic realm="Login Required"'})
 
 def requires_auth(f):
@@ -68,8 +57,6 @@ def requires_auth(f):
             return authenticate()
         return f(*args, **kwargs)
     return decorated
-
-# --- ヘルパー関数: データ操作 ---
 
 def load_index():
     try:
@@ -147,8 +134,6 @@ def delete_album_data(artist_id, album_id):
         artist['albums'] = [a for a in artist['albums'] if a['id'] != album_id]
         save_artist(artist)
 
-# --- ヘルパー関数: ファイル処理 & 変換 ---
-
 def allowed_image(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS_IMG
 
@@ -163,20 +148,6 @@ def save_image_file(file):
         return filename
     return None
 
-def convert_to_low_quality(input_path, output_filename):
-    output_path = os.path.join(app.config['MUSIC_LOW_FOLDER'], output_filename)
-    try:
-        if os.path.exists(output_path): return
-        cmd = [
-            'ffmpeg', '-y', '-i', input_path,
-            '-b:a', '96k',
-            '-map', 'a',
-            output_path
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        print(f"Low quality conversion failed: {e}")
-
 def process_upload_file(file):
     filename = secure_filename(file.filename)
     base_id = uuid.uuid4().hex
@@ -189,10 +160,9 @@ def process_upload_file(file):
     try:
         subprocess.run([
             'ffmpeg', '-y', '-i', temp_path,
-            '-b:a', '192k', '-map', 'a',
+            '-b:a', '320k', '-map', 'a',
             hq_path
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        convert_to_low_quality(hq_path, final_filename)
     except Exception as e:
         print(f"Conversion error: {e}")
         if os.path.exists(temp_path): os.remove(temp_path)
@@ -200,8 +170,6 @@ def process_upload_file(file):
     
     if os.path.exists(temp_path): os.remove(temp_path)
     return final_filename
-
-# --- バックグラウンド処理 ---
 
 def background_download_process(album_id, url, temp_track_id, start_track_num):
     try:
@@ -246,7 +214,7 @@ def background_download_process(album_id, url, temp_track_id, start_track_num):
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '192',
+                'preferredquality': '320',
             }],
             'quiet': True,
             'ignoreerrors': True
@@ -273,8 +241,6 @@ def background_download_process(album_id, url, temp_track_id, start_track_num):
                     real_title = dl_info.get('title', 'Unknown Title')
 
                 hq_file = f"{base_id}.mp3"
-                hq_full_path = os.path.join(app.config['MUSIC_FOLDER'], hq_file)
-                convert_to_low_quality(hq_full_path, hq_file)
 
                 target_track['title'] = real_title
                 target_track['filename'] = hq_file
@@ -289,16 +255,8 @@ def background_download_process(album_id, url, temp_track_id, start_track_num):
     except Exception as e:
         print(f"Background process error: {e}")
 
-# --- API ---
-
 @app.route('/stream/<path:filename>')
 def stream_music(filename):
-    return send_from_directory(app.config['MUSIC_FOLDER'], filename)
-
-@app.route('/stream/low/<path:filename>')
-def stream_music_low(filename):
-    if os.path.exists(os.path.join(app.config['MUSIC_LOW_FOLDER'], filename)):
-        return send_from_directory(app.config['MUSIC_LOW_FOLDER'], filename)
     return send_from_directory(app.config['MUSIC_FOLDER'], filename)
 
 @app.route('/image/<path:filename>')
@@ -340,12 +298,9 @@ def api_get_album_detail(album_id):
     for track in album['tracks']:
         if not track.get('processing') and track.get('filename'):
             track['stream_url'] = url_for('stream_music', filename=track['filename'], _external=True, _scheme='https')
-            track['stream_low_url'] = url_for('stream_music_low', filename=track['filename'], _external=True, _scheme='https')
         track['cover_url'] = album.get('cover_url')
 
     return jsonify(album)
-
-# --- 管理画面 (Basic認証) ---
 
 @app.route('/')
 def root_redirect():
@@ -558,28 +513,11 @@ def admin_delete_track(artist_id, album_id, track_id):
         track = next((t for t in album['tracks'] if t['id'] == track_id), None)
         if track:
             if track.get('filename'):
-                try: 
-                    os.remove(os.path.join(app.config['MUSIC_FOLDER'], track['filename']))
-                    os.remove(os.path.join(app.config['MUSIC_LOW_FOLDER'], track['filename']))
+                try: os.remove(os.path.join(app.config['MUSIC_FOLDER'], track['filename']))
                 except: pass
             album['tracks'] = [t for t in album['tracks'] if t['id'] != track_id]
             save_album(album)
     return redirect(url_for('admin_view_album', artist_id=artist_id, album_id=album_id))
-
-
-class PrefixMiddleware(object):
-    def __init__(self, app, prefix):
-        self.app = app
-        self.prefix = prefix
-
-    def __call__(self, environ, start_response):
-        environ["SCRIPT_NAME"] = self.prefix
-        path = environ.get("PATH_INFO", "")
-        if path.startswith(self.prefix):
-            environ["PATH_INFO"] = path[len(self.prefix):]
-        return self.app(environ, start_response)
-
-app.wsgi_app = PrefixMiddleware(app.wsgi_app, "/music")
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
