@@ -1,8 +1,3 @@
-# 1. ホスト手順
-
-プロジェクトのルートディレクトリに保存してください。
-
-```markdown
 # Personal Music Streaming Server
 
 自分専用の音楽ストリーミングサーバーです。
