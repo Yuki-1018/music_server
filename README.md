@@ -39,9 +39,7 @@ python app.py
 ## 4. ログイン情報
 *   **User:** `admin`
 *   **Pass:** `123456`
-```
 
----
 
 ### 2. Nginx設定 (オプション)
 Nginxを使う場合の設定例です。使わなくても動作します。
@@ -69,3 +67,4 @@ server {
         proxy_send_timeout 300s;
     }
 }
+```
