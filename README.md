@@ -100,7 +100,6 @@ gunicorn -w 4 -b 127.0.0.1:5000 app:app
 
 # 2. app.py への追加コード
 
-ユーザー様より提示いただいたコードは非常に有効です。これを `app.py` に組み込んだ形は以下のようになります。
 （`CORS(app)` の直後、設定ブロックの前あたりに入れるのが適切です）
 
 ```python
@@ -170,15 +169,6 @@ server {
         proxy_connect_timeout 300s;
         proxy_send_timeout 300s;
     }
-
-    # (オプション) 静的ファイルへの直接アクセスによる高速化
-    # Flaskを通さずにNginxから直接配信する場合
-    # location /music/stream/ {
-    #     alias /path/to/your/app/music/;
-    # }
-    # location /music/image/ {
-    #     alias /path/to/your/app/images/;
-    # }
 }
 ```
 
