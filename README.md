@@ -52,6 +52,7 @@ server {
     # 動画アップロード用にサイズ制限を緩和
     client_max_body_size 500M;
 
+    #locationは必ずサブディレクトリと同じ名前に設定
     location /music {
         # python app.py で起動しているポートへ
         proxy_pass http://127.0.0.1:5000;
